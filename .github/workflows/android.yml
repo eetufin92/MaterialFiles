@@ -13,26 +13,6 @@ jobs:
 
     steps:
       - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-
-      - name: Generate Changelog
-        id: changelog
-        if: github.event_name != 'pull_request' && github.ref == 'refs/heads/master'
-        run: |
-          # Get the last tag
-          PREVIOUS_TAG=$(git describe --tags --abbrev=0 2>/dev/null || echo "")
-          
-          echo "CHANGES<<EOF" >> $GITHUB_OUTPUT
-          if [ -z "$PREVIOUS_TAG" ]; then
-            # No previous tag, get all commits
-            git log --pretty=format:"* %s (%h)" HEAD >> $GITHUB_OUTPUT
-          else
-            # Get commits since the last tag
-            git log --pretty=format:"* %s (%h)" $PREVIOUS_TAG..HEAD >> $GITHUB_OUTPUT
-          fi
-          echo "" >> $GITHUB_OUTPUT
-          echo "EOF" >> $GITHUB_OUTPUT
 
       - name: set up JDK 17
         uses: actions/setup-java@v4
@@ -44,42 +24,28 @@ jobs:
       - name: Grant execute permission for gradlew
         run: chmod +x gradlew
 
-      - name: Build with Gradle
-        run: ./gradlew assembleRelease
-
-      - name: Sign APK
+      - name: Prepare Keystore
         if: github.event_name != 'pull_request' && github.ref == 'refs/heads/master'
         env:
           KEYSTORE_BASE64: ${{ secrets.KEYSTORE }}
         run: |
-          if [ -z "$KEYSTORE_BASE64" ]; then
-            echo "KEYSTORE secret is missing. Skipping signing."
-            exit 0
+          if [ -n "$KEYSTORE_BASE64" ]; then
+            echo "$KEYSTORE_BASE64" | base64 --decode > release.jks
           fi
-          echo "$KEYSTORE_BASE64" | base64 --decode > release.jks
-          
-          # Find the latest apksigner in the Android SDK
-          APKSIGNER=$(find $ANDROID_SDK_ROOT/build-tools -name apksigner | sort -r | head -n 1)
-          
-          # Find the unsigned APK
-          UNSIGNED_APK=$(find app/build/outputs/apk/release -name "*.apk" | head -n 1)
-          
-          $APKSIGNER sign --ks release.jks \
-            --ks-key-alias "${{ secrets.KEY_ALIAS }}" \
-            --ks-pass pass:"${{ secrets.KEYSTORE_PASSWORD }}" \
-            --key-pass pass:"${{ secrets.KEY_PASSWORD }}" \
-            --out app/build/outputs/apk/release/app-release-signed.apk \
-            $UNSIGNED_APK
-          
-          # Delete the unsigned APK once signed
-          rm "$UNSIGNED_APK"
+
+      - name: Build with Gradle
+        run: ./gradlew assembleRelease
+        env:
+          STORE_FILE: ../release.jks
+          STORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
+          KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
 
       - name: Prepare APK for upload
         run: |
-          if [ -f app/build/outputs/apk/release/app-release-signed.apk ]; then
-            mv app/build/outputs/apk/release/app-release-signed.apk MaterialFiles-release.apk
-          else
-            mv app/build/outputs/apk/release/*.apk MaterialFiles-release-unsigned.apk
+          APK_PATH=$(find app/build/outputs/apk/release -name "*.apk" | head -n 1)
+          if [ -n "$APK_PATH" ]; then
+            mv "$APK_PATH" MaterialFiles-release.apk
           fi
 
       - name: Upload APK
@@ -94,9 +60,7 @@ jobs:
         with:
           tag_name: v${{ github.run_number }}
           name: Release v${{ github.run_number }}
-          body: |
-            ### Changes in this release:
-            ${{ steps.changelog.outputs.CHANGES }}
+          generate_release_notes: true
           files: "*.apk"
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
