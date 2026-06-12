@@ -22,6 +22,7 @@ import com.hierynomus.mssmb2.messages.SMB2ChangeNotifyResponse
 import com.hierynomus.protocol.commons.EnumWithValue
 import com.hierynomus.smbj.ProgressListener
 import com.hierynomus.smbj.SMBClient
+import com.hierynomus.smbj.SmbConfig
 import com.hierynomus.smbj.auth.AuthenticationContext
 import com.hierynomus.smbj.common.SMBRuntimeException
 import com.hierynomus.smbj.session.Session
@@ -48,6 +49,7 @@ import java.net.UnknownHostException
 import java.util.Collections
 import java.util.WeakHashMap
 import java.util.concurrent.Future
+import java.util.concurrent.TimeUnit
 
 object Client {
     @Volatile
@@ -57,8 +59,66 @@ object Client {
 
     private val sessions = mutableMapOf<Authority, Session>()
 
+    fun resetConnection(authority: Authority) {
+        synchronized(sessions) {
+            sessions[authority]?.let {
+                it.closeSafe()
+                it.connection.closeSafe()
+                sessions -= authority
+            }
+        }
+    }
+
     private val directoryFileInformationCache =
         Collections.synchronizedMap(WeakHashMap<Path, FileInformation>())
+
+    private fun <T> runWithRetry(authority: Authority, block: () -> T): T {
+        try {
+            return block()
+        } catch (e: ClientException) {
+            if (e.isRecoverableError) {
+                synchronized(sessions) {
+                    sessions[authority]?.let {
+                        it.closeSafe()
+                        it.connection.closeSafe()
+                        sessions -= authority
+                    }
+                }
+                return block()
+            }
+            throw e
+        }
+    }
+
+    private val ClientException.isRecoverableError: Boolean
+        get() {
+            val status = (cause as? SMBApiException)?.status
+            if (status == NtStatus.STATUS_USER_SESSION_DELETED ||
+                status == NtStatus.STATUS_NETWORK_SESSION_EXPIRED
+            ) {
+                return true
+            }
+            var currentCause: Throwable? = cause
+            while (currentCause != null) {
+                if (currentCause is IOException) {
+                    val message = currentCause.message
+                    if (message != null && (
+                        message == "Broken pipe" ||
+                        message.contains("Connection reset") ||
+                        message.contains("Software caused connection abort") ||
+                        message.contains("Read timed out") ||
+                        message.contains("Write timed out")
+                    )) {
+                        return true
+                    }
+                }
+                if (currentCause is java.util.concurrent.TimeoutException) {
+                    return true
+                }
+                currentCause = currentCause.cause
+            }
+            return false
+        }
 
     @Throws(ClientException::class)
     fun openByteChannel(
@@ -69,7 +129,7 @@ object Client {
         createDisposition: SMB2CreateDisposition,
         createOptions: Set<SMB2CreateOptions>,
         isAppend: Boolean
-    ): SeekableByteChannel {
+    ): SeekableByteChannel = runWithRetry(path.authority) {
         val sharePath = path.sharePath ?: throw ClientException("$path does not have a share path")
         val session = getSession(path.authority)
         val share = getDiskShare(session, sharePath.name)
@@ -81,92 +141,96 @@ object Client {
         } catch (e: SMBRuntimeException) {
             throw ClientException(e)
         }
-        return FileByteChannel(file, isAppend)
+        FileByteChannel(file, isAppend)
     }
 
     @Throws(ClientException::class)
-    fun openDirectoryIterator(path: Path): CloseableIterator<Path> {
-        val session = getSession(path.authority)
-        val sharePath = path.sharePath
-        if (sharePath == null) {
-            val transport = try {
-                SMBTransportFactories.SRVSVC.getTransport(session)
-            } catch (e: IOException) {
-                throw ClientException(e)
-            } catch (e: SMBRuntimeException) {
-                throw ClientException(e)
-            }
-            val serverService = ServerService(transport)
-            val netShareInfos = try {
-                serverService.shares1
-            } catch (e: IOException) {
-                throw ClientException(e)
-            } catch (e: SMBRuntimeException) {
-                throw ClientException(e)
-            }
-            val sharePaths = netShareInfos.mapNotNull {
-                if (!(it.type.hasBits(ShareTypes.STYPE_PRINTQ.value)
-                        || it.type.hasBits(ShareTypes.STYPE_DEVICE.value)
-                        || it.type.hasBits(ShareTypes.STYPE_IPC.value))) {
-                    path.resolve(it.netName)
-                } else {
-                    null
+    fun openDirectoryIterator(path: Path): CloseableIterator<Path> =
+        runWithRetry(path.authority) {
+            val session = getSession(path.authority)
+            val sharePath = path.sharePath
+            if (sharePath == null) {
+                val transport = try {
+                    SMBTransportFactories.SRVSVC.getTransport(session)
+                } catch (e: IOException) {
+                    throw ClientException(e)
+                } catch (e: SMBRuntimeException) {
+                    throw ClientException(e)
                 }
-            }
-            return object : CloseableIterator<Path>, Iterator<Path> by sharePaths.iterator() {
-                override fun close() {}
-            }
-        } else {
-            val share = getDiskShare(session, sharePath.name)
-            val directory = try {
-                share.openDirectory(
-                    sharePath.path, enumSetOf(
-                        AccessMask.FILE_LIST_DIRECTORY, AccessMask.FILE_READ_ATTRIBUTES,
-                        AccessMask.FILE_READ_EA
-                    ), null, SMB2ShareAccess.ALL, SMB2CreateDisposition.FILE_OPEN, null
-                )
-            } catch (e: SMBRuntimeException) {
-                throw ClientException(e)
-            }
-            val directoryIterator = directory.iterator(FileIdFullDirectoryInformation::class.java)
-                .asSequence()
-                .filter { fileInformation ->
-                    !fileInformation.fileName.let { it == "." || it == ".." }
+                val serverService = ServerService(transport)
+                val netShareInfos = try {
+                    serverService.shares1
+                } catch (e: IOException) {
+                    throw ClientException(e)
+                } catch (e: SMBRuntimeException) {
+                    throw ClientException(e)
                 }
-                .map { fileInformation ->
-                    path.resolve(fileInformation.fileName).also {
-                        directoryFileInformationCache[it] = fileInformation.toFileInformation()
+                val sharePaths = netShareInfos.mapNotNull {
+                    if (!(it.type.hasBits(ShareTypes.STYPE_PRINTQ.value)
+                            || it.type.hasBits(ShareTypes.STYPE_DEVICE.value)
+                            || it.type.hasBits(ShareTypes.STYPE_IPC.value))) {
+                        path.resolve(it.netName)
+                    } else {
+                        null
                     }
                 }
-                .iterator()
-            return object : CloseableIterator<Path>, Iterator<Path> by directoryIterator,
-                Closeable by directory {}
+                object : CloseableIterator<Path>, Iterator<Path> by sharePaths.iterator() {
+                    override fun close() {}
+                }
+            } else {
+                val share = getDiskShare(session, sharePath.name)
+                val directory = try {
+                    share.openDirectory(
+                        sharePath.path, enumSetOf(
+                            AccessMask.FILE_LIST_DIRECTORY, AccessMask.FILE_READ_ATTRIBUTES,
+                            AccessMask.FILE_READ_EA
+                        ), null, SMB2ShareAccess.ALL, SMB2CreateDisposition.FILE_OPEN, null
+                    )
+                } catch (e: SMBRuntimeException) {
+                    throw ClientException(e)
+                }
+                val directoryIterator = directory.iterator(FileIdFullDirectoryInformation::class.java)
+                    .asSequence()
+                    .filter { fileInformation ->
+                        !fileInformation.fileName.let { it == "." || it == ".." }
+                    }
+                    .map { fileInformation ->
+                        path.resolve(fileInformation.fileName).also {
+                            directoryFileInformationCache[it] = fileInformation.toFileInformation()
+                        }
+                    }
+                    .iterator()
+                object : CloseableIterator<Path>, Iterator<Path> by directoryIterator,
+                    Closeable by directory {}
+            }
         }
-    }
 
     // @see https://gitlab.com/samba-team/devel/samba/-/blob/master/source3/libsmb/cli_smb2_fnum.c
     // cli_smb2_mkdir_send
     @Throws(ClientException::class)
     fun createDirectory(path: Path, fileAttributes: Set<FileAttributes>? = null) {
-        val sharePath = path.sharePath ?: throw ClientException("$path does not have a share path")
-        val session = getSession(path.authority)
-        val share = getDiskShare(session, sharePath.name)
-        val directory = try {
-            share.openDirectory(
-                sharePath.path,
-                enumSetOf(AccessMask.FILE_READ_ATTRIBUTES, AccessMask.FILE_READ_EA),
-                enumSetOf(FileAttributes.FILE_ATTRIBUTE_DIRECTORY)
-                    .apply { fileAttributes?.let { addAll(it) } }, SMB2ShareAccess.ALL,
-                SMB2CreateDisposition.FILE_CREATE,
-                enumSetOf(SMB2CreateOptions.FILE_OPEN_REPARSE_POINT)
-            )
-        } catch (e: SMBRuntimeException) {
-            throw ClientException(e)
-        }
-        try {
-            directory.close()
-        } catch (e: SMBRuntimeException) {
-            throw ClientException(e)
+        runWithRetry(path.authority) {
+            val sharePath =
+                path.sharePath ?: throw ClientException("$path does not have a share path")
+            val session = getSession(path.authority)
+            val share = getDiskShare(session, sharePath.name)
+            val directory = try {
+                share.openDirectory(
+                    sharePath.path,
+                    enumSetOf(AccessMask.FILE_READ_ATTRIBUTES, AccessMask.FILE_READ_EA),
+                    enumSetOf(FileAttributes.FILE_ATTRIBUTE_DIRECTORY)
+                        .apply { fileAttributes?.let { addAll(it) } }, SMB2ShareAccess.ALL,
+                    SMB2CreateDisposition.FILE_CREATE,
+                    enumSetOf(SMB2CreateOptions.FILE_OPEN_REPARSE_POINT)
+                )
+            } catch (e: SMBRuntimeException) {
+                throw ClientException(e)
+            }
+            try {
+                directory.close()
+            } catch (e: SMBRuntimeException) {
+                throw ClientException(e)
+            }
         }
     }
 
@@ -178,47 +242,50 @@ object Client {
         reparseData: SymbolicLinkReparseData,
         fileAttributes: Set<FileAttributes>? = null
     ) {
-        val sharePath = path.sharePath ?: throw ClientException("$path does not have a share path")
-        val session = getSession(path.authority)
-        val share = getDiskShare(session, sharePath.name)
-        val diskEntry = try {
-            share.open(
-                sharePath.path, enumSetOf(
-                    AccessMask.FILE_READ_ATTRIBUTES, AccessMask.FILE_WRITE_ATTRIBUTES,
-                    AccessMask.FILE_READ_EA, AccessMask.FILE_WRITE_EA, AccessMask.DELETE,
-                    AccessMask.SYNCHRONIZE
-                ), enumSetOf<FileAttributes>().apply {
-                    fileAttributes?.let { addAll(it) }
-                    this -= FileAttributes.FILE_ATTRIBUTE_REPARSE_POINT
-                    if (isEmpty()) {
-                        this += FileAttributes.FILE_ATTRIBUTE_NORMAL
-                    }
-                }, null, SMB2CreateDisposition.FILE_CREATE, enumSetOf(
-                    SMB2CreateOptions.FILE_NON_DIRECTORY_FILE,
-                    SMB2CreateOptions.FILE_OPEN_REPARSE_POINT
+        runWithRetry(path.authority) {
+            val sharePath =
+                path.sharePath ?: throw ClientException("$path does not have a share path")
+            val session = getSession(path.authority)
+            val share = getDiskShare(session, sharePath.name)
+            val diskEntry = try {
+                share.open(
+                    sharePath.path, enumSetOf(
+                        AccessMask.FILE_READ_ATTRIBUTES, AccessMask.FILE_WRITE_ATTRIBUTES,
+                        AccessMask.FILE_READ_EA, AccessMask.FILE_WRITE_EA, AccessMask.DELETE,
+                        AccessMask.SYNCHRONIZE
+                    ), enumSetOf<FileAttributes>().apply {
+                        fileAttributes?.let { addAll(it) }
+                        this -= FileAttributes.FILE_ATTRIBUTE_REPARSE_POINT
+                        if (isEmpty()) {
+                            this += FileAttributes.FILE_ATTRIBUTE_NORMAL
+                        }
+                    }, null, SMB2CreateDisposition.FILE_CREATE, enumSetOf(
+                        SMB2CreateOptions.FILE_NON_DIRECTORY_FILE,
+                        SMB2CreateOptions.FILE_OPEN_REPARSE_POINT
+                    )
                 )
-            )
-        } catch (e: SMBRuntimeException) {
-            throw ClientException(e)
-        }
-        try {
-            diskEntry.use {
-                var successful = false
-                try {
-                    it.setSymbolicLinkReparseData(reparseData)
-                    successful = true
-                } finally {
-                    if (!successful) {
-                        try {
-                            it.deleteOnClose()
-                        } catch (e: SMBRuntimeException) {
-                            e.printStackTrace()
+            } catch (e: SMBRuntimeException) {
+                throw ClientException(e)
+            }
+            try {
+                diskEntry.use {
+                    var successful = false
+                    try {
+                        it.setSymbolicLinkReparseData(reparseData)
+                        successful = true
+                    } finally {
+                        if (!successful) {
+                            try {
+                                it.deleteOnClose()
+                            } catch (e: SMBRuntimeException) {
+                                e.printStackTrace()
+                            }
                         }
                     }
                 }
+            } catch (e: SMBRuntimeException) {
+                throw ClientException(e)
             }
-        } catch (e: SMBRuntimeException) {
-            throw ClientException(e)
         }
     }
 
@@ -226,72 +293,78 @@ object Client {
     //      cli_smb2_hardlink_send
     @Throws(ClientException::class)
     fun createLink(path: Path, link: Path, openReparsePoint: Boolean) {
-        val sharePath = path.sharePath ?: throw ClientException("$path does not have a share path")
-        val linkSharePath = link.sharePath
-            ?: throw ClientException("$link does not have a share path")
-        if (link.authority != path.authority || linkSharePath.name != sharePath.name) {
-            throw ClientException(
-                SMBApiException(
-                    NtStatus.STATUS_NOT_SAME_DEVICE.value, SMB2MessageCommandCode.SMB2_SET_INFO,
-                    null
+        runWithRetry(path.authority) {
+            val sharePath =
+                path.sharePath ?: throw ClientException("$path does not have a share path")
+            val linkSharePath = link.sharePath
+                ?: throw ClientException("$link does not have a share path")
+            if (link.authority != path.authority || linkSharePath.name != sharePath.name) {
+                throw ClientException(
+                    SMBApiException(
+                        NtStatus.STATUS_NOT_SAME_DEVICE.value, SMB2MessageCommandCode.SMB2_SET_INFO,
+                        null
+                    )
                 )
-            )
-        }
-        val session = getSession(path.authority)
-        val share = getDiskShare(session, sharePath.name)
-        val diskEntry = try {
-            share.open(
-                sharePath.path,
-                enumSetOf(AccessMask.FILE_WRITE_ATTRIBUTES, AccessMask.FILE_WRITE_EA),
-                null, SMB2ShareAccess.ALL, SMB2CreateDisposition.FILE_OPEN,
-                // CreateHardLink doesn't work for directories.
-                enumSetOf(SMB2CreateOptions.FILE_NON_DIRECTORY_FILE).apply {
-                    if (openReparsePoint) {
-                        this += SMB2CreateOptions.FILE_OPEN_REPARSE_POINT
+            }
+            val session = getSession(path.authority)
+            val share = getDiskShare(session, sharePath.name)
+            val diskEntry = try {
+                share.open(
+                    sharePath.path,
+                    enumSetOf(AccessMask.FILE_WRITE_ATTRIBUTES, AccessMask.FILE_WRITE_EA),
+                    null, SMB2ShareAccess.ALL, SMB2CreateDisposition.FILE_OPEN,
+                    // CreateHardLink doesn't work for directories.
+                    enumSetOf(SMB2CreateOptions.FILE_NON_DIRECTORY_FILE).apply {
+                        if (openReparsePoint) {
+                            this += SMB2CreateOptions.FILE_OPEN_REPARSE_POINT
+                        }
                     }
-                }
-            )
-        } catch (e: SMBRuntimeException) {
-            throw ClientException(e)
-        }
-        try {
-            diskEntry.use { it.createHardlink(linkSharePath.path, false) }
-        } catch (e: SMBRuntimeException) {
-            throw ClientException(e)
+                )
+            } catch (e: SMBRuntimeException) {
+                throw ClientException(e)
+            }
+            try {
+                diskEntry.use { it.createHardlink(linkSharePath.path, false) }
+            } catch (e: SMBRuntimeException) {
+                throw ClientException(e)
+            }
         }
     }
 
     @Throws(ClientException::class)
     fun delete(path: Path) {
-        val sharePath = path.sharePath ?: throw ClientException("$path does not have a share path")
-        val session = getSession(path.authority)
-        val share = getDiskShare(session, sharePath.name)
-        val diskEntry = try {
-            share.open(
-                sharePath.path, enumSetOf(AccessMask.DELETE), null, SMB2ShareAccess.ALL,
-                SMB2CreateDisposition.FILE_OPEN, enumSetOf(
-                    SMB2CreateOptions.FILE_DELETE_ON_CLOSE,
-                    SMB2CreateOptions.FILE_OPEN_REPARSE_POINT
+        runWithRetry(path.authority) {
+            val sharePath =
+                path.sharePath ?: throw ClientException("$path does not have a share path")
+            val session = getSession(path.authority)
+            val share = getDiskShare(session, sharePath.name)
+            val diskEntry = try {
+                share.open(
+                    sharePath.path, enumSetOf(AccessMask.DELETE), null, SMB2ShareAccess.ALL,
+                    SMB2CreateDisposition.FILE_OPEN, enumSetOf(
+                        SMB2CreateOptions.FILE_DELETE_ON_CLOSE,
+                        SMB2CreateOptions.FILE_OPEN_REPARSE_POINT
+                    )
                 )
-            )
-        } catch (e: SMBRuntimeException) {
-            if (e is SMBApiException && e.status == NtStatus.STATUS_DELETE_PENDING) {
-                return
+            } catch (e: SMBRuntimeException) {
+                if (e is SMBApiException && e.status == NtStatus.STATUS_DELETE_PENDING) {
+                    return@runWithRetry
+                }
+                throw ClientException(e)
             }
-            throw ClientException(e)
+            try {
+                diskEntry.close()
+            } catch (e: SMBRuntimeException) {
+                throw ClientException(e)
+            }
+            directoryFileInformationCache -= path
         }
-        try {
-            diskEntry.close()
-        } catch (e: SMBRuntimeException) {
-            throw ClientException(e)
-        }
-        directoryFileInformationCache -= path
     }
 
     // @see https://gitlab.com/samba-team/devel/samba/-/blob/master/source3/libsmb/clisymlink.c
     //      cli_readlink_send
     @Throws(ClientException::class)
-    fun readSymbolicLink(path: Path): SymbolicLinkReparseData {
+    fun readSymbolicLink(path: Path): SymbolicLinkReparseData = runWithRetry(path.authority) {
         val sharePath = path.sharePath ?: throw ClientException("$path does not have a share path")
         val session = getSession(path.authority)
         val share = getDiskShare(session, sharePath.name)
@@ -305,7 +378,7 @@ object Client {
         } catch (e: SMBRuntimeException) {
             throw ClientException(e)
         }
-        return try {
+        try {
             diskEntry.use { it.getSymbolicLinkReparseData() }
         } catch (e: SMBRuntimeException) {
             throw ClientException(e)
@@ -322,95 +395,97 @@ object Client {
         intervalMillis: Long,
         listener: ((Long) -> Unit)?
     ) {
-        val sourceSharePath = source.sharePath
-            ?: throw ClientException("$source does not have a share path")
-        val targetSharePath = target.sharePath
-            ?: throw ClientException("$target does not have a share path")
-        val sourceSession = getSession(source.authority)
-        val sourceShare = getDiskShare(sourceSession, sourceSharePath.name)
-        val targetSession = getSession(target.authority)
-        val targetShare = getDiskShare(targetSession, targetSharePath.name)
-        val sourceFile = try {
-            sourceShare.openFile(
-                sourceSharePath.path, enumSetOf(
-                    AccessMask.FILE_READ_DATA, AccessMask.FILE_READ_ATTRIBUTES,
-                    AccessMask.FILE_READ_EA
-                ), null, SMB2ShareAccess.ALL, SMB2CreateDisposition.FILE_OPEN,
-                if (openReparsePoint) {
-                    enumSetOf(SMB2CreateOptions.FILE_OPEN_REPARSE_POINT)
-                } else {
-                    null
-                }
-            )
-        } catch (e: SMBRuntimeException) {
-            throw ClientException(e)
-        }
-        try {
-            sourceFile.use {
-                val attributesToCopy = if (copyAttributes) {
-                    val sourceAttributes = try {
-                        sourceFile.getFileInformation(FileBasicInformation::class.java)
+        runWithRetry(source.authority) {
+            val sourceSharePath = source.sharePath
+                ?: throw ClientException("$source does not have a share path")
+            val targetSharePath = target.sharePath
+                ?: throw ClientException("$target does not have a share path")
+            val sourceSession = getSession(source.authority)
+            val sourceShare = getDiskShare(sourceSession, sourceSharePath.name)
+            val targetSession = getSession(target.authority)
+            val targetShare = getDiskShare(targetSession, targetSharePath.name)
+            val sourceFile = try {
+                sourceShare.openFile(
+                    sourceSharePath.path, enumSetOf(
+                        AccessMask.FILE_READ_DATA, AccessMask.FILE_READ_ATTRIBUTES,
+                        AccessMask.FILE_READ_EA
+                    ), null, SMB2ShareAccess.ALL, SMB2CreateDisposition.FILE_OPEN,
+                    if (openReparsePoint) {
+                        enumSetOf(SMB2CreateOptions.FILE_OPEN_REPARSE_POINT)
+                    } else {
+                        null
+                    }
+                )
+            } catch (e: SMBRuntimeException) {
+                throw ClientException(e)
+            }
+            try {
+                sourceFile.use {
+                    val attributesToCopy = if (copyAttributes) {
+                        val sourceAttributes = try {
+                            sourceFile.getFileInformation(FileBasicInformation::class.java)
+                        } catch (e: SMBRuntimeException) {
+                            throw ClientException(e)
+                        }.fileAttributes
+                        EnumWithValue.EnumUtils.toEnumSet(sourceAttributes, FileAttributes::class.java)
+                    } else {
+                        enumSetOf(FileAttributes.FILE_ATTRIBUTE_NORMAL)
+                    }
+                    val targetFile = try {
+                        targetShare.openFile(
+                            targetSharePath.path, enumSetOf(
+                            AccessMask.FILE_WRITE_DATA, AccessMask.FILE_WRITE_ATTRIBUTES,
+                            AccessMask.FILE_WRITE_EA, AccessMask.DELETE
+                        ), attributesToCopy, SMB2ShareAccess.ALL,
+                            SMB2CreateDisposition.FILE_CREATE,
+                            enumSetOf(SMB2CreateOptions.FILE_OPEN_REPARSE_POINT)
+                        )
                     } catch (e: SMBRuntimeException) {
                         throw ClientException(e)
-                    }.fileAttributes
-                    EnumWithValue.EnumUtils.toEnumSet(sourceAttributes, FileAttributes::class.java)
-                } else {
-                    enumSetOf(FileAttributes.FILE_ATTRIBUTE_NORMAL)
-                }
-                val targetFile = try {
-                    targetShare.openFile(
-                        targetSharePath.path, enumSetOf(
-                        AccessMask.FILE_WRITE_DATA, AccessMask.FILE_WRITE_ATTRIBUTES,
-                        AccessMask.FILE_WRITE_EA, AccessMask.DELETE
-                    ), attributesToCopy, SMB2ShareAccess.ALL,
-                        SMB2CreateDisposition.FILE_CREATE,
-                        enumSetOf(SMB2CreateOptions.FILE_OPEN_REPARSE_POINT)
-                    )
-                } catch (e: SMBRuntimeException) {
-                    throw ClientException(e)
-                }
-                targetFile.use {
-                    var successful = false
-                    try {
-                        if (sourceSession == targetSession) {
-                            val length = try {
-                                sourceFile.getFileInformation(FileStandardInformation::class.java)
-                            } catch (e: SMBRuntimeException) {
-                                throw ClientException(e)
-                            }.endOfFile
-                            val progressListener = listener?.let {
-                                var lastCopiedSize = 0L
-                                ProgressListener { copiedSize, _ ->
-                                    it(copiedSize - lastCopiedSize)
-                                    lastCopiedSize = copiedSize
+                    }
+                    targetFile.use {
+                        var successful = false
+                        try {
+                            if (sourceSession == targetSession) {
+                                val length = try {
+                                    sourceFile.getFileInformation(FileStandardInformation::class.java)
+                                } catch (e: SMBRuntimeException) {
+                                    throw ClientException(e)
+                                }.endOfFile
+                                val progressListener = listener?.let {
+                                    var lastCopiedSize = 0L
+                                    ProgressListener { copiedSize, _ ->
+                                        it(copiedSize - lastCopiedSize)
+                                        lastCopiedSize = copiedSize
+                                    }
                                 }
+                                try {
+                                    sourceFile.serverCopy(0, targetFile, 0, length, progressListener)
+                                } catch (e: SMBRuntimeException) {
+                                    throw ClientException(e)
+                                }
+                            } else {
+                                val sourceInputStream = FileByteChannel(sourceFile, false)
+                                    .newInputStream()
+                                val targetOutputStream = FileByteChannel(targetFile, false)
+                                    .newOutputStream()
+                                sourceInputStream.copyTo(targetOutputStream, intervalMillis, listener)
                             }
-                            try {
-                                sourceFile.serverCopy(0, targetFile, 0, length, progressListener)
-                            } catch (e: SMBRuntimeException) {
-                                throw ClientException(e)
-                            }
-                        } else {
-                            val sourceInputStream = FileByteChannel(sourceFile, false)
-                                .newInputStream()
-                            val targetOutputStream = FileByteChannel(targetFile, false)
-                                .newOutputStream()
-                            sourceInputStream.copyTo(targetOutputStream, intervalMillis, listener)
-                        }
-                        successful = true
-                    } finally {
-                        if (!successful) {
-                            try {
-                                targetFile.deleteOnClose()
-                            } catch (e: SMBRuntimeException) {
-                                e.printStackTrace()
+                            successful = true
+                        } finally {
+                            if (!successful) {
+                                try {
+                                    targetFile.deleteOnClose()
+                                } catch (e: SMBRuntimeException) {
+                                    e.printStackTrace()
+                                }
                             }
                         }
                     }
                 }
+            } catch (e: SMBRuntimeException) {
+                throw ClientException(e)
             }
-        } catch (e: SMBRuntimeException) {
-            throw ClientException(e)
         }
     }
 
@@ -418,75 +493,115 @@ object Client {
     //      cli_smb2_rename
     @Throws(ClientException::class)
     fun rename(path: Path, newPath: Path) {
-        val sharePath = path.sharePath ?: throw ClientException("$path does not have a share path")
-        val newSharePath = newPath.sharePath
-            ?: throw ClientException("$newPath does not have a share path")
-        if (newPath.authority != path.authority || newSharePath.name != sharePath.name) {
-            throw ClientException(
-                SMBApiException(
-                    NtStatus.STATUS_NOT_SAME_DEVICE.value, SMB2MessageCommandCode.SMB2_SET_INFO,
-                    null
+        runWithRetry(path.authority) {
+            val sharePath =
+                path.sharePath ?: throw ClientException("$path does not have a share path")
+            val newSharePath = newPath.sharePath
+                ?: throw ClientException("$newPath does not have a share path")
+            if (newPath.authority != path.authority || newSharePath.name != sharePath.name) {
+                throw ClientException(
+                    SMBApiException(
+                        NtStatus.STATUS_NOT_SAME_DEVICE.value, SMB2MessageCommandCode.SMB2_SET_INFO,
+                        null
+                    )
                 )
-            )
+            }
+            val session = getSession(path.authority)
+            val share = getDiskShare(session, sharePath.name)
+            val diskEntry = try {
+                share.open(
+                    sharePath.path, enumSetOf(AccessMask.DELETE), null, SMB2ShareAccess.ALL,
+                    SMB2CreateDisposition.FILE_OPEN,
+                    enumSetOf(SMB2CreateOptions.FILE_OPEN_REPARSE_POINT)
+                )
+            } catch (e: SMBRuntimeException) {
+                throw ClientException(e)
+            }
+            try {
+                diskEntry.use { it.rename(newSharePath.path, true) }
+            } catch (e: SMBRuntimeException) {
+                throw ClientException(e)
+            }
+            directoryFileInformationCache -= path
+            directoryFileInformationCache -= newPath
         }
-        val session = getSession(path.authority)
-        val share = getDiskShare(session, sharePath.name)
-        val diskEntry = try {
-            share.open(
-                sharePath.path, enumSetOf(AccessMask.DELETE), null, SMB2ShareAccess.ALL,
-                SMB2CreateDisposition.FILE_OPEN,
-                enumSetOf(SMB2CreateOptions.FILE_OPEN_REPARSE_POINT)
-            )
-        } catch (e: SMBRuntimeException) {
-            throw ClientException(e)
-        }
-        try {
-            diskEntry.use { it.rename(newSharePath.path, true) }
-        } catch (e: SMBRuntimeException) {
-            throw ClientException(e)
-        }
-        directoryFileInformationCache -= path
-        directoryFileInformationCache -= newPath
     }
 
     @Throws(ClientException::class)
-    fun getPathInformation(path: Path, openReparsePoint: Boolean): PathInformation {
-        val sharePath = path.sharePath ?: throw ClientException("$path does not have a share path")
-        val session = getSession(path.authority)
-        if (sharePath.path.isEmpty()) {
-            return when (val share = getShare(session, sharePath.name)) {
-                is DiskShare -> {
-                    val shareInfo = try {
-                        share.shareInformation
-                    } catch (e: SMBRuntimeException) {
-                        e.printStackTrace()
-                        null
+    fun getPathInformation(path: Path, openReparsePoint: Boolean): PathInformation =
+        runWithRetry(path.authority) {
+            val sharePath =
+                path.sharePath ?: throw ClientException("$path does not have a share path")
+            val session = getSession(path.authority)
+            if (sharePath.path.isEmpty()) {
+                return@runWithRetry when (val share = getShare(session, sharePath.name)) {
+                    is DiskShare -> {
+                        val shareInfo = try {
+                            share.shareInformation
+                        } catch (e: SMBRuntimeException) {
+                            e.printStackTrace()
+                            null
+                        }
+                        ShareInformation(ShareType.DISK, shareInfo)
+                        // Don't close the disk share, because it might still be in use, or might become
+                        // in use shortly. All shares are automatically closed when the session is
+                        // closed anyway.
                     }
-                    ShareInformation(ShareType.DISK, shareInfo)
-                    // Don't close the disk share, because it might still be in use, or might become
-                    // in use shortly. All shares are automatically closed when the session is
-                    // closed anyway.
+                    is PipeShare -> ShareInformation(ShareType.PIPE, null).also { share.closeSafe() }
+                    is PrinterShare -> ShareInformation(ShareType.PRINTER, null)
+                        .also { share.closeSafe() }
+                    else -> throw AssertionError(share)
                 }
-                is PipeShare -> ShareInformation(ShareType.PIPE, null).also { share.closeSafe() }
-                is PrinterShare -> ShareInformation(ShareType.PRINTER, null)
-                    .also { share.closeSafe() }
-                else -> throw AssertionError(share)
-            }
-        } else {
-            synchronized(directoryFileInformationCache) {
-                directoryFileInformationCache[path]?.let {
-                    if (openReparsePoint || !it.fileAttributes.hasBits(
-                            FileAttributes.FILE_ATTRIBUTE_REPARSE_POINT.value
-                        )) {
-                        return it.also { directoryFileInformationCache -= path }
+            } else {
+                synchronized(directoryFileInformationCache) {
+                    directoryFileInformationCache[path]?.let {
+                        if (openReparsePoint || !it.fileAttributes.hasBits(
+                                FileAttributes.FILE_ATTRIBUTE_REPARSE_POINT.value
+                            )
+                        ) {
+                            return@runWithRetry it
+                        }
                     }
                 }
+                val share = getDiskShare(session, sharePath.name)
+                val diskEntry = try {
+                    share.open(
+                        sharePath.path,
+                        enumSetOf(AccessMask.FILE_READ_ATTRIBUTES, AccessMask.FILE_READ_EA),
+                        null, SMB2ShareAccess.ALL, SMB2CreateDisposition.FILE_OPEN,
+                        if (openReparsePoint) {
+                            enumSetOf(SMB2CreateOptions.FILE_OPEN_REPARSE_POINT)
+                        } else {
+                            null
+                        }
+                    )
+                } catch (e: SMBRuntimeException) {
+                    throw ClientException(e)
+                }
+                val fileAllInformation = try {
+                    diskEntry.use { it.fileInformation }
+                } catch (e: SMBRuntimeException) {
+                    throw ClientException(e)
+                }
+                fileAllInformation.toFileInformation()
             }
+        }
+
+    @Throws(ClientException::class)
+    fun setFileInformation(
+        path: Path,
+        openReparsePoint: Boolean,
+        fileInformation: FileSettableInformation
+    ) {
+        runWithRetry(path.authority) {
+            val sharePath =
+                path.sharePath ?: throw ClientException("$path does not have a share path")
+            val session = getSession(path.authority)
             val share = getDiskShare(session, sharePath.name)
             val diskEntry = try {
                 share.open(
                     sharePath.path,
-                    enumSetOf(AccessMask.FILE_READ_ATTRIBUTES, AccessMask.FILE_READ_EA),
+                    enumSetOf(AccessMask.FILE_WRITE_ATTRIBUTES, AccessMask.FILE_WRITE_EA),
                     null, SMB2ShareAccess.ALL, SMB2CreateDisposition.FILE_OPEN,
                     if (openReparsePoint) {
                         enumSetOf(SMB2CreateOptions.FILE_OPEN_REPARSE_POINT)
@@ -497,67 +612,39 @@ object Client {
             } catch (e: SMBRuntimeException) {
                 throw ClientException(e)
             }
-            val fileAllInformation = try {
-                diskEntry.use { it.fileInformation }
+            try {
+                diskEntry.use { it.setFileInformation(fileInformation) }
             } catch (e: SMBRuntimeException) {
                 throw ClientException(e)
             }
-            return fileAllInformation.toFileInformation()
+            directoryFileInformationCache -= path
         }
-    }
-
-    @Throws(ClientException::class)
-    fun setFileInformation(
-        path: Path,
-        openReparsePoint: Boolean,
-        fileInformation: FileSettableInformation
-    ) {
-        val sharePath = path.sharePath ?: throw ClientException("$path does not have a share path")
-        val session = getSession(path.authority)
-        val share = getDiskShare(session, sharePath.name)
-        val diskEntry = try {
-            share.open(
-                sharePath.path,
-                enumSetOf(AccessMask.FILE_WRITE_ATTRIBUTES, AccessMask.FILE_WRITE_EA),
-                null, SMB2ShareAccess.ALL, SMB2CreateDisposition.FILE_OPEN,
-                if (openReparsePoint) {
-                    enumSetOf(SMB2CreateOptions.FILE_OPEN_REPARSE_POINT)
-                } else {
-                    null
-                }
-            )
-        } catch (e: SMBRuntimeException) {
-            throw ClientException(e)
-        }
-        try {
-            diskEntry.use { it.setFileInformation(fileInformation) }
-        } catch (e: SMBRuntimeException) {
-            throw ClientException(e)
-        }
-        directoryFileInformationCache -= path
     }
 
     @Throws(ClientException::class)
     fun checkAccess(path: Path, desiredAccess: Set<AccessMask>, openReparsePoint: Boolean) {
-        val sharePath = path.sharePath ?: throw ClientException("$path does not have a share path")
-        val session = getSession(path.authority)
-        val share = getDiskShare(session, sharePath.name)
-        val diskEntry = try {
-            share.open(
-                sharePath.path, desiredAccess, null, SMB2ShareAccess.ALL,
-                SMB2CreateDisposition.FILE_OPEN, if (openReparsePoint) {
-                    enumSetOf(SMB2CreateOptions.FILE_OPEN_REPARSE_POINT)
-                } else {
-                    null
-                }
-            )
-        } catch (e: SMBRuntimeException) {
-            throw ClientException(e)
-        }
-        try {
-            diskEntry.close()
-        } catch (e: SMBRuntimeException) {
-            throw ClientException(e)
+        runWithRetry(path.authority) {
+            val sharePath =
+                path.sharePath ?: throw ClientException("$path does not have a share path")
+            val session = getSession(path.authority)
+            val share = getDiskShare(session, sharePath.name)
+            val diskEntry = try {
+                share.open(
+                    sharePath.path, desiredAccess, null, SMB2ShareAccess.ALL,
+                    SMB2CreateDisposition.FILE_OPEN, if (openReparsePoint) {
+                        enumSetOf(SMB2CreateOptions.FILE_OPEN_REPARSE_POINT)
+                    } else {
+                        null
+                    }
+                )
+            } catch (e: SMBRuntimeException) {
+                throw ClientException(e)
+            }
+            try {
+                diskEntry.close()
+            } catch (e: SMBRuntimeException) {
+                throw ClientException(e)
+            }
         }
     }
 

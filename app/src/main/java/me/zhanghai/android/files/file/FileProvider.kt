@@ -126,7 +126,13 @@ class FileProvider : ContentProvider() {
                 //  ACTION_OPEN_DOCUMENT.
                 DocumentsContract.Document.COLUMN_MIME_TYPE -> {
                     columns += column
-                    values += MimeType.guessFromPath(path.toString()).value
+                    val size = try {
+                        path.size()
+                    } catch (e: IOException) {
+                        e.printStackTrace()
+                        -1L
+                    }
+                    values += MimeType.guessFromPath(path.toString(), size).value
                 }
                 DocumentsContract.Document.COLUMN_LAST_MODIFIED -> {
                     val lastModified = try {
@@ -160,7 +166,13 @@ class FileProvider : ContentProvider() {
 
     override fun getType(uri: Uri): String? {
         val path = uri.fileProviderPath
-        return MimeType.guessFromPath(path.toString()).value
+        val size = try {
+            path.size()
+        } catch (e: IOException) {
+            e.printStackTrace()
+            -1L
+        }
+        return MimeType.guessFromPath(path.toString(), size).value
     }
 
     override fun insert(uri: Uri, values: ContentValues?): Uri? {

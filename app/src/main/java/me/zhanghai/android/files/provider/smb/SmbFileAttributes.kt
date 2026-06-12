@@ -29,6 +29,9 @@ internal class SmbFileAttributes(
 ) : AbstractBasicFileAttributes() {
     fun attributes(): Long = attributes
 
+    val isHidden: Boolean
+        get() = attributes.hasBits(FileAttributes.FILE_ATTRIBUTE_HIDDEN.value)
+
     companion object {
         fun from(fileInformation: FileInformation, path: SmbPath): SmbFileAttributes {
             // lastWriteTime is returned by GetFileTime(), while changeTime isn't returned.

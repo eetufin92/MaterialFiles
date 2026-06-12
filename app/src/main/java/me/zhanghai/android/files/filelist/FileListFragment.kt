@@ -102,6 +102,10 @@ import me.zhanghai.android.files.util.ParcelableArgs
 import me.zhanghai.android.files.util.Stateful
 import me.zhanghai.android.files.util.Success
 import me.zhanghai.android.files.util.addOnBackPressedCallback
+import me.zhanghai.android.files.provider.smb.SmbPath
+import me.zhanghai.android.files.provider.smb.isSmbPath
+import me.zhanghai.android.files.provider.smb.client.Client
+import me.zhanghai.android.files.provider.smb.client.Authority
 import me.zhanghai.android.files.util.args
 import me.zhanghai.android.files.util.asFileName
 import me.zhanghai.android.files.util.asFileNameOrNull
@@ -119,6 +123,7 @@ import me.zhanghai.android.files.util.fadeToVisibilityUnsafe
 import me.zhanghai.android.files.util.getDimensionDp
 import me.zhanghai.android.files.util.getQuantityString
 import me.zhanghai.android.files.util.hasSw600Dp
+import me.zhanghai.android.files.util.hideSoftInput
 import me.zhanghai.android.files.util.isOrientationLandscape
 import me.zhanghai.android.files.util.putArgs
 import me.zhanghai.android.files.util.setOnEditorConfirmActionListener
@@ -260,6 +265,16 @@ class FileListFragment : Fragment(), BreadcrumbLayout.Listener, FileListAdapter.
             true
         }
 
+        binding.resetConnectionButton.setOnClickListener {
+            val path = viewModel.currentPath
+            if (path is SmbPath) {
+                Client.resetConnection(path.authority)
+                refresh()
+            }
+        }
+        binding.retryConnectionButton.setOnClickListener {
+            refresh()
+        }
         val viewLifecycleOwner = viewLifecycleOwner
         addOnBackPressedCallback(
             object : OnBackPressedCallback(false) {
@@ -391,27 +406,27 @@ class FileListFragment : Fragment(), BreadcrumbLayout.Listener, FileListAdapter.
 
     private fun setUpSearchView() {
         val searchView = menuBinding.searchItem.actionView as FixQueryChangeSearchView
-        // MenuItem.OnActionExpandListener.onMenuItemActionExpand() is called before SearchView
-        // resets the query.
         searchView.setOnSearchClickListener {
             viewModel.isSearchViewExpanded = true
             searchView.setQuery(viewModel.searchViewQuery, false)
             debouncedSearchRunnable()
         }
-        // SearchView.OnCloseListener.onClose() is not always called.
-        menuBinding.searchItem.setOnActionExpandListener(object : MenuItem.OnActionExpandListener {
-            override fun onMenuItemActionExpand(item: MenuItem): Boolean = true
-
-            override fun onMenuItemActionCollapse(item: MenuItem): Boolean {
-                viewModel.isSearchViewExpanded = false
-                viewModel.stopSearching()
-                return true
-            }
-        })
+        searchView.setOnCloseListener {
+            searchView.clearFocus()
+            binding.root.requestFocus()
+            searchView.hideSoftInput()
+            viewModel.isSearchViewExpanded = false
+            viewModel.searchViewQuery = ""
+            viewModel.stopSearching()
+            false
+        }
         searchView.setOnQueryTextListener(object : SearchView.OnQueryTextListener {
             override fun onQueryTextSubmit(query: String): Boolean {
                 debouncedSearchRunnable.cancel()
                 viewModel.search(query)
+                searchView.clearFocus()
+                binding.root.requestFocus()
+                searchView.hideSoftInput()
                 return true
             }
 
@@ -424,14 +439,40 @@ class FileListFragment : Fragment(), BreadcrumbLayout.Listener, FileListAdapter.
                 return false
             }
         })
+        syncSearchViewState()
+    }
+
+    private fun syncSearchViewState() {
+        if (!this::menuBinding.isInitialized) {
+            return
+        }
+        val searchView = menuBinding.searchItem.actionView as FixQueryChangeSearchView
         if (viewModel.isSearchViewExpanded) {
-            menuBinding.searchItem.expandActionView()
+            if (searchView.isIconified) {
+                searchView.isIconified = false
+            }
+            if (searchView.query.toString() != viewModel.searchViewQuery) {
+                searchView.setQuery(viewModel.searchViewQuery, false)
+            }
+        } else {
+            if (!searchView.isIconified) {
+                searchView.isIconified = true
+            }
         }
     }
 
     private fun collapseSearchView() {
-        if (this::menuBinding.isInitialized && menuBinding.searchItem.isActionViewExpanded) {
-            menuBinding.searchItem.collapseActionView()
+        if (this::menuBinding.isInitialized && viewModel.isSearchViewExpanded) {
+            val searchView = menuBinding.searchItem.actionView as FixQueryChangeSearchView
+            searchView.clearFocus()
+            binding.root.requestFocus()
+            if (!searchView.isIconified) {
+                searchView.isIconified = true
+            }
+            searchView.hideSoftInput()
+            viewModel.isSearchViewExpanded = false
+            viewModel.searchViewQuery = ""
+            viewModel.stopSearching()
         }
     }
 
@@ -441,6 +482,7 @@ class FileListFragment : Fragment(), BreadcrumbLayout.Listener, FileListAdapter.
         updateViewSortMenuItems()
         updateSelectAllMenuItem()
         updateShowHiddenFilesMenuItem()
+        syncSearchViewState()
     }
 
     override fun onOptionsItemSelected(item: MenuItem): Boolean {
@@ -584,11 +626,13 @@ class FileListFragment : Fragment(), BreadcrumbLayout.Listener, FileListAdapter.
 
     private fun onSearchViewExpandedChanged(expanded: Boolean) {
         updateViewSortMenuItems()
+        requireActivity().invalidateOptionsMenu()
     }
 
     private fun onFileListChanged(stateful: Stateful<List<FileItem>>) {
         val files = stateful.value
         val isSearching = viewModel.searchState.isSearching
+        val isSmbPath = viewModel.currentPath.isSmbPath
         when {
             stateful is Failure -> binding.toolbar.setSubtitle(R.string.error)
             stateful is Loading && !isSearching -> binding.toolbar.setSubtitle(R.string.loading)
@@ -596,8 +640,10 @@ class FileListFragment : Fragment(), BreadcrumbLayout.Listener, FileListAdapter.
         }
         val hasFiles = !files.isNullOrEmpty()
         binding.swipeRefreshLayout.isRefreshing = stateful is Loading && (hasFiles || isSearching)
-        binding.progress.fadeToVisibilityUnsafe(stateful is Loading && !(hasFiles || isSearching))
-        binding.errorText.fadeToVisibilityUnsafe(stateful is Failure && !hasFiles)
+        val isLoading = stateful is Loading && !(hasFiles || isSearching)
+        binding.progressLayout.fadeToVisibilityUnsafe(isLoading)
+        binding.resetConnectionButton.isVisible = isLoading && isSmbPath
+        binding.errorLayout.fadeToVisibilityUnsafe(stateful is Failure && !hasFiles)
         val throwable = (stateful as? Failure)?.throwable
         if (throwable != null) {
             throwable.printStackTrace()
@@ -1665,8 +1711,12 @@ class FileListFragment : Fragment(), BreadcrumbLayout.Listener, FileListAdapter.
         val overlayToolbar: Toolbar,
         val breadcrumbLayout: BreadcrumbLayout,
         val contentLayout: ViewGroup,
+        val progressLayout: ViewGroup,
         val progress: ProgressBar,
+        val resetConnectionButton: View,
+        val errorLayout: ViewGroup,
         val errorText: TextView,
+        val retryConnectionButton: View,
         val emptyView: View,
         val swipeRefreshLayout: SwipeRefreshLayout,
         val recyclerView: RecyclerView,
@@ -1693,7 +1743,11 @@ class FileListFragment : Fragment(), BreadcrumbLayout.Listener, FileListAdapter.
                     includeBinding.persistentBarLayout, appBarBinding.appBarLayout,
                     appBarBinding.toolbar, appBarBinding.overlayToolbar,
                     appBarBinding.breadcrumbLayout, contentBinding.contentLayout,
-                    contentBinding.progress, contentBinding.errorText, contentBinding.emptyView,
+                    contentBinding.progressLayout, contentBinding.progress,
+                    contentBinding.resetConnectionButton,
+                    contentBinding.errorLayout, contentBinding.errorText,
+                    contentBinding.retryConnectionButton,
+                    contentBinding.emptyView,
                     contentBinding.swipeRefreshLayout, contentBinding.recyclerView,
                     bottomBarBinding.bottomBarLayout, bottomBarBinding.bottomToolbar,
                     bottomBarBinding.bottomCreateFileNameEdit, speedDialBinding.speedDialView

@@ -34,6 +34,9 @@ internal class SmbShareFileAttributes(
 
     fun unallocatedSpace(): Long? = unallocatedSpace
 
+    val isHidden: Boolean
+        get() = false
+
     companion object {
         fun from(shareInformation: ShareInformation, path: SmbPath): SmbShareFileAttributes {
             val lastModifiedTime = FileTime::class.EPOCH

@@ -240,5 +240,5 @@ fun View.showSoftInput() {
 }
 
 fun View.hideSoftInput() {
-    inputMethodManager.hideSoftInputFromWindow(windowToken, InputMethodManager.HIDE_NOT_ALWAYS)
+    inputMethodManager.hideSoftInputFromWindow(windowToken, 0)
 }

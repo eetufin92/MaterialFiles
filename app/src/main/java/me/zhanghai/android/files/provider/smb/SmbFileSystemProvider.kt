@@ -301,7 +301,19 @@ object SmbFileSystemProvider : FileSystemProvider(), PathObservableProvider, Sea
     override fun isHidden(path: Path): Boolean {
         path as? SmbPath ?: throw ProviderMismatchException(path.toString())
         val fileName = path.fileNameByteString ?: return false
-        return fileName.startsWith(HIDDEN_FILE_NAME_PREFIX)
+        if (fileName.startsWith(HIDDEN_FILE_NAME_PREFIX)) {
+            return true
+        }
+        val attributes = try {
+            readAttributes(path, BasicFileAttributes::class.java, LinkOption.NOFOLLOW_LINKS)
+        } catch (ignored: IOException) {
+            return false
+        }
+        return when (attributes) {
+            is SmbFileAttributes -> attributes.isHidden
+            is SmbShareFileAttributes -> attributes.isHidden
+            else -> false
+        }
     }
 
     override fun getFileStore(path: Path): FileStore {

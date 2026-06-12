@@ -274,6 +274,7 @@
         <item quantity="one">Select a folder</item>
         <item quantity="other">Select folders</item>
     </plurals>
+    <string name="file_list_reset_connection">Reset connection</string>
     <plurals name="file_list_subtitle_directory_count_format">
         <item quantity="one">%1$,d folder</item>
         <item quantity="other">%1$,d folders</item>

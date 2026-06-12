@@ -28,6 +28,6 @@ object AndroidFileTypeDetector : FileTypeDetector() {
         if (attributes is ContentProviderFileAttributes) {
             attributes.mimeType()?.let { return it }
         }
-        return MimeType.guessFromPath(path.toString()).value
+        return MimeType.guessFromPath(path.toString(), attributes.size()).value
     }
 }

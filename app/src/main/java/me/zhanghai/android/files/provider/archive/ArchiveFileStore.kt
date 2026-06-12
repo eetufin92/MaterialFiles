@@ -18,7 +18,15 @@ internal class ArchiveFileStore(private val archiveFile: Path) : PosixFileStore(
 
     override fun name(): String = archiveFile.toString()
 
-    override fun type(): String = MimeType.guessFromPath(archiveFile.toString()).value
+    override fun type(): String {
+        val size = try {
+            archiveFile.size()
+        } catch (e: IOException) {
+            e.printStackTrace()
+            -1L
+        }
+        return MimeType.guessFromPath(archiveFile.toString(), size).value
+    }
 
     override fun isReadOnly(): Boolean = true
 

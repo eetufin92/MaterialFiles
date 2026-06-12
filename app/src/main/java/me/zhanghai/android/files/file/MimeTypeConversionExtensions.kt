@@ -11,13 +11,16 @@ import me.zhanghai.android.files.provider.common.PosixFileType
 import me.zhanghai.android.files.util.asFileName
 import me.zhanghai.android.files.util.asPathName
 
-fun MimeType.Companion.guessFromPath(path: String): MimeType {
+fun MimeType.Companion.guessFromPath(path: String, size: Long = -1): MimeType {
     val fileName = path.asPathName().fileName ?: return DIRECTORY
-    return guessFromExtension(fileName.asFileName().singleExtension)
+    return guessFromExtension(fileName.asFileName().singleExtension, size)
 }
 
-fun MimeType.Companion.guessFromExtension(extension: String): MimeType {
+fun MimeType.Companion.guessFromExtension(extension: String, size: Long = -1): MimeType {
     val extension = extension.lowercase()
+    if (extension == "ts" && size != -1L) {
+        return if (size > 500 * 1024) "video/mp2ts".asMimeType() else "application/typescript".asMimeType()
+    }
     return extensionToMimeTypeOverrideMap[extension]
         ?: MimeTypeMap.getSingleton().getMimeTypeFromExtensionCompat(extension)?.asMimeTypeOrNull()
         ?: GENERIC
@@ -39,7 +42,6 @@ private val extensionToMimeTypeOverrideMap = mapOf(
     "lzma" to "application/x-lzma",
     "p7b" to "application/x-pkcs7-certificates",
     "spc" to "application/x-pkcs7-certificates", // Clashes with "chemical/x-galactic-spc"
-    "ts" to "application/typescript", // Clashes with "video/mp2ts"
     "py3" to "text/x-python",
     "py3x" to "text/x-python",
     "pyx" to "text/x-python",
