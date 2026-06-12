@@ -60,7 +60,7 @@ android {
             minifyEnabled true
             shrinkResources true
             proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'), 'proguard-rules.pro'
-            if (signingConfigs.release.storeFile != null) {
+            if (signingConfigs.release.storeFile?.exists()) {
                 signingConfig signingConfigs.release
             }
         }
