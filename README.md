@@ -1,6 +1,6 @@
 # Material Files (Enhanced Fork)
 
-[![Android CI status](https://github.com/eetu/MaterialFiles/workflows/Android%20CI/badge.svg)](https://github.com/eetu/MaterialFiles/actions) [![GitHub release](https://img.shields.io/github/v/release/eetu/MaterialFiles)](https://github.com/eetu/MaterialFiles/releases) [![License](https://img.shields.io/github/license/zhanghai/MaterialFiles?color=blue)](LICENSE)
+[![Android CI status](https://github.com/eetufin92/MaterialFiles/workflows/Android%20CI/badge.svg)](https://github.com/eetufin92/MaterialFiles/actions) [![GitHub release](https://img.shields.io/github/v/release/eetufin92/MaterialFiles)](https://github.com/eetufin92/MaterialFiles/releases) [![License](https://img.shields.io/github/license/zhanghai/MaterialFiles?color=blue)](LICENSE)
 
 An open source Material Design file manager for Android, enhanced with privacy and reliability improvements.
 
