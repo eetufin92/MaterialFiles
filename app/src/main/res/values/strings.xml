@@ -785,6 +785,17 @@
         <item>View contents</item>
         <item>Ask what to do</item>
     </string-array>
+
+    <string name="settings_file_associations_title">File associations</string>
+    <string name="settings_file_associations_summary">Manage default apps for file types</string>
+    <string name="settings_file_associations_empty">No file associations</string>
+    <string name="settings_file_association_add_title">Add file association</string>
+    <string name="settings_file_association_extension_hint">Extension (e.g., pdf)</string>
+    <string name="settings_file_association_app_title">App</string>
+    <string name="settings_file_association_none">None (Ask every time)</string>
+    <string name="settings_file_association_remove_message">Remove this file association?</string>
+    <string name="file_open_with_always">Always use this app for this file type</string>
+
     <string name="settings_show_pdf_thumbnail_pre_28_title">Show thumbnail for PDF documents</string>
     <string name="settings_show_pdf_thumbnail_pre_28_summary">Might make the app unstable on older versions of Android</string>
     <string name="settings_read_remote_files_for_thumbnail_title">Read remote files for thumbnail</string>

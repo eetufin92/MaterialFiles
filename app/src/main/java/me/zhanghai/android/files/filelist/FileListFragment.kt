@@ -7,6 +7,7 @@ package me.zhanghai.android.files.filelist
 
 import android.app.Activity
 import android.content.ClipData
+import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
@@ -1300,12 +1301,31 @@ class FileListFragment : Fragment(), BreadcrumbLayout.Listener, FileListAdapter.
     }
 
     override fun openFileWith(file: FileItem) {
-        openFileWithIntent(file, true)
+        OpenWithDialogFragment.show(file, this)
     }
 
     private fun openFileWithIntent(file: FileItem, withChooser: Boolean) {
         val path = file.path
         val mimeType = file.mimeType
+        if (!withChooser) {
+            val association = Settings.FILE_ASSOCIATIONS.valueCompat.find {
+                it.extension.equals(file.extension, ignoreCase = true)
+            }
+            if (association != null) {
+                val componentName = association.componentName?.let { ComponentName.unflattenFromString(it) }
+                if (componentName != null) {
+                    val intent = path.fileProviderUri.createViewIntent(mimeType)
+                        .addFlags(Intent.FLAG_GRANT_WRITE_URI_PERMISSION)
+                        .apply {
+                            component = componentName
+                            extraPath = path
+                            maybeAddImageViewerActivityExtras(this, path, mimeType)
+                        }
+                    startActivitySafe(intent)
+                    return
+                }
+            }
+        }
         if (path.isArchivePath) {
             FileJobService.open(path, mimeType, withChooser, requireContext())
         } else {

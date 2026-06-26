@@ -12,6 +12,7 @@ import java8.nio.file.Paths
 import me.zhanghai.android.files.R
 import me.zhanghai.android.files.app.application
 import me.zhanghai.android.files.compat.EnvironmentCompat2
+import me.zhanghai.android.files.file.FileAssociation
 import me.zhanghai.android.files.filelist.FileSortOptions
 import me.zhanghai.android.files.filelist.FileViewType
 import me.zhanghai.android.files.filelist.OpenApkDefaultAction
@@ -181,4 +182,7 @@ object Settings {
             R.string.pref_key_read_remote_files_for_thumbnail,
             R.bool.pref_default_value_read_remote_files_for_thumbnail
         )
+
+    val FILE_ASSOCIATIONS: SettingLiveData<List<FileAssociation>> =
+        ParcelValueSettingLiveData(R.string.pref_key_file_associations, emptyList())
 }
