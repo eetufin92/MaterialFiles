@@ -19,6 +19,10 @@ An open source Material Design file manager for Android, enhanced with privacy a
   - Negation filtering (e.g., `not:text`)
 - **Better MIME Detection**:
   - Uses file size to distinguish between MPEG-TS video and TypeScript files (`.ts` files > 500KB are treated as video).
+  - Fixed image opening priority to ensure internal viewers are preferred over generic "Save as" handlers.
+- **Custom File Associations**:
+  - Internal "Always open with" support for file extensions.
+  - Dedicated "File associations" management UI in Settings to view and remove default apps.
 - **UI Refinements**:
   - Refactored File List UI with better state persistence in search.
   - Updated progress and error layouts for a more robust experience.
