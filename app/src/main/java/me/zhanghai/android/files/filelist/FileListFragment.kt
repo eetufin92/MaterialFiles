@@ -1,5 +1,6 @@
 /*
  * Copyright (c) 2018 Hai Zhang <dreaming.in.code.zh@gmail.com>
+ * Copyright (c) 2026 eetufin92 <eetufin92@gmail.com>
  * All Rights Reserved.
  */
 
@@ -46,6 +47,7 @@ import androidx.drawerlayout.widget.DrawerLayout
 import androidx.fragment.app.Fragment
 import androidx.fragment.app.commit
 import androidx.lifecycle.LifecycleOwner
+import androidx.lifecycle.lifecycleScope
 import androidx.recyclerview.widget.GridLayoutManager
 import androidx.recyclerview.widget.RecyclerView
 import androidx.swiperefreshlayout.widget.SwipeRefreshLayout
@@ -92,13 +94,28 @@ import me.zhanghai.android.files.ui.OverlayToolbarActionMode
 import me.zhanghai.android.files.ui.PersistentBarLayout
 import me.zhanghai.android.files.ui.PersistentBarLayoutToolbarActionMode
 import me.zhanghai.android.files.ui.PersistentDrawerLayout
+import me.zhanghai.android.files.ui.SearchProgressView
 import me.zhanghai.android.files.ui.ScrollingViewOnApplyWindowInsetsListener
 import me.zhanghai.android.files.ui.SpeedDialViewOnBackPressedCallback
 import me.zhanghai.android.files.ui.ThemedFastScroller
+import me.zhanghai.android.files.file.loadFileItem
 import me.zhanghai.android.files.ui.ToolbarActionMode
+import java.io.IOException
 import me.zhanghai.android.files.util.DebouncedRunnable
+import java8.nio.file.FileVisitResult
+import java8.nio.file.Files
+import java8.nio.file.SimpleFileVisitor
+import java8.nio.file.attribute.BasicFileAttributes
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
+import me.zhanghai.android.files.app.AppDatabase
+import me.zhanghai.android.files.file.cache.getServerId
+import me.zhanghai.android.files.file.cache.toEntity
 import me.zhanghai.android.files.util.Failure
 import me.zhanghai.android.files.util.Loading
+import me.zhanghai.android.files.util.SearchLoading
 import me.zhanghai.android.files.util.ParcelableArgs
 import me.zhanghai.android.files.util.Stateful
 import me.zhanghai.android.files.util.Success
@@ -172,6 +189,8 @@ class FileListFragment : Fragment(), BreadcrumbLayout.Listener, FileListAdapter.
     private val argsPath by lazy { args.intent.extraPath }
 
     private val viewModel by viewModels { { FileListViewModel() } }
+
+    private var buildIndexJob: Job? = null
 
     private lateinit var binding: Binding
 
@@ -637,10 +656,16 @@ class FileListFragment : Fragment(), BreadcrumbLayout.Listener, FileListAdapter.
         when {
             stateful is Failure -> binding.toolbar.setSubtitle(R.string.error)
             stateful is Loading && !isSearching -> binding.toolbar.setSubtitle(R.string.loading)
+            stateful is SearchLoading -> binding.toolbar.subtitle = getSubtitle(files!!)
             else -> binding.toolbar.subtitle = getSubtitle(files!!)
         }
+        if (stateful is SearchLoading) {
+            binding.searchProgressView.show(stateful.messageRes, files?.size)
+        } else if (stateful !is Loading || !isSearching) {
+            binding.searchProgressView.hide()
+        }
         val hasFiles = !files.isNullOrEmpty()
-        binding.swipeRefreshLayout.isRefreshing = stateful is Loading && (hasFiles || isSearching)
+        binding.swipeRefreshLayout.isRefreshing = (stateful is Loading || stateful is SearchLoading) && hasFiles && !isSearching
         val isLoading = stateful is Loading && !(hasFiles || isSearching)
         binding.progressLayout.fadeToVisibilityUnsafe(isLoading)
         binding.resetConnectionButton.isVisible = isLoading && isSmbPath
@@ -783,7 +808,11 @@ class FileListFragment : Fragment(), BreadcrumbLayout.Listener, FileListAdapter.
         if (!Settings.FILE_LIST_SHOW_HIDDEN_FILES.valueCompat) {
             files = files.filterNot { it.isHidden }
         }
-        adapter.replaceListAndIsSearching(files, viewModel.searchState.isSearching)
+        val isSearching = viewModel.searchState.isSearching
+        if (isSearching) {
+            files = files.sortedWith(viewModel.sortOptions.createComparator())
+        }
+        adapter.replaceListAndIsSearching(files, isSearching)
     }
 
     private fun updateShowHiddenFilesMenuItem() {
@@ -1245,6 +1274,31 @@ class FileListFragment : Fragment(), BreadcrumbLayout.Listener, FileListAdapter.
     }
 
     override fun openFile(file: FileItem) {
+        if (!file.isVerified) {
+            viewLifecycleOwner.lifecycleScope.launch {
+                val exists = withContext(Dispatchers.IO) {
+                    try {
+                        java8.nio.file.Files.exists(file.path)
+                    } catch (e: IOException) {
+                        false
+                    }
+                }
+                if (exists) {
+                    openFileVerified(file)
+                } else {
+                    showToast(R.string.file_no_longer_exists)
+                    withContext<Unit>(Dispatchers.IO) {
+                        AppDatabase.getInstance().fileCacheDao().deleteByPath(file.path.toString())
+                    }
+                    refresh()
+                }
+            }
+        } else {
+            openFileVerified(file)
+        }
+    }
+
+    private fun openFileVerified(file: FileItem) {
         val pickOptions = viewModel.pickOptions
         if (pickOptions != null) {
             if (file.attributes.isDirectory) {
@@ -1490,6 +1544,44 @@ class FileListFragment : Fragment(), BreadcrumbLayout.Listener, FileListAdapter.
         FilePropertiesDialogFragment.show(file, this)
     }
 
+    override fun buildIndex(file: FileItem) {
+        val serverId = file.path.getServerId() ?: return
+        buildIndexJob?.cancel()
+        buildIndexJob = viewLifecycleOwner.lifecycleScope.launch {
+            binding.searchProgressView.show(
+                getString(R.string.file_list_build_index_message_format, file.name)
+            )
+            try {
+                withContext(Dispatchers.IO) {
+                    val dao = AppDatabase.getInstance().fileCacheDao()
+                    val entities = mutableListOf<me.zhanghai.android.files.file.cache.FileCacheEntity>()
+                    Files.walkFileTree(file.path, object : SimpleFileVisitor<Path>() {
+                        override fun visitFile(file: Path, attrs: BasicFileAttributes): FileVisitResult {
+                            try {
+                                val item = file.loadFileItem()
+                                entities.add(item.toEntity(serverId))
+                                if (entities.size >= 100) {
+                                    val batch = entities.toList()
+                                    launch { dao.insertAll(batch) }
+                                    entities.clear()
+                                }
+                            } catch (ignored: IOException) {}
+                            return FileVisitResult.CONTINUE
+                        }
+                    })
+                    if (entities.isNotEmpty()) {
+                        dao.insertAll(entities)
+                    }
+                }
+                showToast(R.string.file_list_build_index_success)
+            } catch (e: Exception) {
+                e.printStackTrace()
+            } finally {
+                binding.searchProgressView.hide()
+            }
+        }
+    }
+
     private fun showCreateFileDialog() {
         CreateFileDialogFragment.show(this)
     }
@@ -1730,6 +1822,7 @@ class FileListFragment : Fragment(), BreadcrumbLayout.Listener, FileListAdapter.
         val toolbar: Toolbar,
         val overlayToolbar: Toolbar,
         val breadcrumbLayout: BreadcrumbLayout,
+        val searchProgressView: SearchProgressView,
         val contentLayout: ViewGroup,
         val progressLayout: ViewGroup,
         val progress: ProgressBar,
@@ -1762,7 +1855,8 @@ class FileListFragment : Fragment(), BreadcrumbLayout.Listener, FileListAdapter.
                     bindingRoot, includeBinding.drawerLayout, includeBinding.persistentDrawerLayout,
                     includeBinding.persistentBarLayout, appBarBinding.appBarLayout,
                     appBarBinding.toolbar, appBarBinding.overlayToolbar,
-                    appBarBinding.breadcrumbLayout, contentBinding.contentLayout,
+                    appBarBinding.breadcrumbLayout, appBarBinding.searchProgressView,
+                    contentBinding.contentLayout,
                     contentBinding.progressLayout, contentBinding.progress,
                     contentBinding.resetConnectionButton,
                     contentBinding.errorLayout, contentBinding.errorText,

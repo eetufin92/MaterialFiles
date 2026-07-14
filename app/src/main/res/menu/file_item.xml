@@ -52,6 +52,10 @@
         android:title="@string/file_item_action_create_shortcut" />
 
     <item
+        android:id="@+id/action_build_index"
+        android:title="@string/file_list_action_build_index" />
+
+    <item
         android:id="@+id/action_properties"
         android:title="@string/file_item_action_properties" />
 </menu>

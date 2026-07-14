@@ -1,5 +1,6 @@
 /*
  * Copyright (c) 2019 Hai Zhang <dreaming.in.code.zh@gmail.com>
+ * Copyright (c) 2026 eetufin92 <eetufin92@gmail.com>
  * All Rights Reserved.
  */
 
@@ -8,7 +9,6 @@ package me.zhanghai.android.files.provider.common
 import android.util.Log
 import java.io.IOException
 import java.io.InterruptedIOException
-import java.time.LocalDate
 import java.time.ZoneId
 import java8.nio.file.DirectoryIteratorException
 import java8.nio.file.FileVisitOption
@@ -18,12 +18,10 @@ import java8.nio.file.Files
 import java8.nio.file.LinkOption
 import java8.nio.file.Path
 import java8.nio.file.attribute.BasicFileAttributes
+import me.zhanghai.android.files.provider.common.search.SearchFilter
 
 object WalkFileTreeSearchable {
     private val TAG = WalkFileTreeSearchable::class.java.simpleName
-
-    private val DATE_FILTER_REGEX = Regex("date(:?[<>])(.+)", RegexOption.IGNORE_CASE)
-    private val SIZE_FILTER_REGEX = Regex("size(:?[<>])(.+)", RegexOption.IGNORE_CASE)
 
     @Throws(IOException::class)
     fun search(
@@ -32,34 +30,7 @@ object WalkFileTreeSearchable {
         intervalMillis: Long,
         listener: (List<Path>) -> Unit
     ) {
-        val allTerms = query.split(Regex("\\s+")).filter { it.isNotEmpty() }
-        val filters = allTerms.mapNotNull { term ->
-            val dateMatch = DATE_FILTER_REGEX.matchEntire(term)
-            if (dateMatch != null) {
-                val operator = dateMatch.groupValues[1]
-                val value = dateMatch.groupValues[2]
-                val timeMillis = parseDate(value)
-                if (timeMillis != null) {
-                    return@mapNotNull DateFilter(timeMillis, operator.endsWith(">"))
-                }
-            }
-            val sizeMatch = SIZE_FILTER_REGEX.matchEntire(term)
-            if (sizeMatch != null) {
-                val operator = sizeMatch.groupValues[1]
-                val value = sizeMatch.groupValues[2]
-                val size = parseSize(value)
-                if (size != null) {
-                    return@mapNotNull SizeFilter(size, operator.endsWith(">"))
-                }
-            }
-            if (term.startsWith("not:", true)) {
-                val name = term.substring(4)
-                if (name.isNotEmpty()) {
-                    return@mapNotNull NameFilter(name, false)
-                }
-            }
-            NameFilter(term, true)
-        }
+        val filters = SearchFilter.parseQuery(query)
         val paths = mutableListOf<Path>()
         // We cannot use Files.find() or Files.walk() because it cannot ignore exceptions.
         walkFileTreeForSearch(directory, object : FileVisitor<Path> {
@@ -113,7 +84,10 @@ object WalkFileTreeSearchable {
                 if (path == directory) {
                     return
                 }
-                if (filters.all { it.accept(path, attributes) }) {
+                val name = path.fileName?.toString() ?: ""
+                val size = attributes?.size() ?: 0L
+                val lastModifiedTime = attributes?.lastModifiedTime()?.toMillis() ?: 0L
+                if (filters.all { it.accept(name, size, lastModifiedTime) }) {
                     paths.add(path)
                 }
                 if (paths.isNotEmpty()) {
@@ -128,64 +102,6 @@ object WalkFileTreeSearchable {
         })
         if (paths.isNotEmpty()) {
             listener(paths.toList())
-        }
-    }
-
-    private fun parseDate(dateStr: String): Long? {
-        val parts = dateStr.split("-")
-        if (parts.isEmpty() || parts.size > 3) return null
-        val year = parts[0].toIntOrNull() ?: return null
-        val month = if (parts.size >= 2) parts[1].toIntOrNull() ?: return null else 1
-        val day = if (parts.size >= 3) parts[2].toIntOrNull() ?: return null else 1
-        return try {
-            LocalDate.of(year, month, day)
-                .atStartOfDay(ZoneId.systemDefault())
-                .toInstant()
-                .toEpochMilli()
-        } catch (e: Exception) {
-            null
-        }
-    }
-
-    private fun parseSize(sizeStr: String): Long? {
-        val match = Regex("(\\d+(?:\\.\\d+)?)\\s*([a-zA-Z]*)").matchEntire(sizeStr) ?: return null
-        val value = match.groupValues[1].toDouble()
-        val unit = match.groupValues[2].uppercase()
-        val factor = when (unit) {
-            "K", "KB" -> 1024L
-            "M", "MB" -> 1024L * 1024L
-            "G", "GB" -> 1024L * 1024L * 1024L
-            "T", "TB" -> 1024L * 1024L * 1024L * 1024L
-            "P", "PB" -> 1024L * 1024L * 1024L * 1024L * 1024L
-            "", "B" -> 1L
-            else -> return null
-        }
-        return (value * factor).toLong()
-    }
-
-    private abstract class Filter {
-        abstract fun accept(path: Path, attributes: BasicFileAttributes?): Boolean
-    }
-
-    private class NameFilter(val text: String, val positive: Boolean) : Filter() {
-        override fun accept(path: Path, attributes: BasicFileAttributes?): Boolean {
-            val fileName = path.fileName?.toString() ?: return false
-            val contains = fileName.contains(text, ignoreCase = true)
-            return if (positive) contains else !contains
-        }
-    }
-
-    private class SizeFilter(val size: Long, val greater: Boolean) : Filter() {
-        override fun accept(path: Path, attributes: BasicFileAttributes?): Boolean {
-            val actualSize = attributes?.size() ?: return false
-            return if (greater) actualSize > size else actualSize < size
-        }
-    }
-
-    private class DateFilter(val timeMillis: Long, val greater: Boolean) : Filter() {
-        override fun accept(path: Path, attributes: BasicFileAttributes?): Boolean {
-            val lastModifiedTime = attributes?.lastModifiedTime()?.toMillis() ?: return false
-            return if (greater) lastModifiedTime > timeMillis else lastModifiedTime < timeMillis
         }
     }
 

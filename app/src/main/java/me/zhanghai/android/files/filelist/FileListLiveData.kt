@@ -1,5 +1,6 @@
 /*
  * Copyright (c) 2018 Hai Zhang <dreaming.in.code.zh@gmail.com>
+ * Copyright (c) 2026 eetufin92 <eetufin92@gmail.com>
  * All Rights Reserved.
  */
 
@@ -8,9 +9,16 @@ package me.zhanghai.android.files.filelist
 import android.os.AsyncTask
 import java8.nio.file.DirectoryIteratorException
 import java8.nio.file.Path
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.GlobalScope
+import kotlinx.coroutines.launch
+import me.zhanghai.android.files.app.AppDatabase
 import me.zhanghai.android.files.file.FileItem
+import me.zhanghai.android.files.file.cache.getServerId
+import me.zhanghai.android.files.file.cache.toEntity
 import me.zhanghai.android.files.file.loadFileItem
 import me.zhanghai.android.files.provider.common.newDirectoryStream
+import me.zhanghai.android.files.settings.Settings
 import me.zhanghai.android.files.util.CloseableLiveData
 import me.zhanghai.android.files.util.Failure
 import me.zhanghai.android.files.util.Loading
@@ -52,7 +60,18 @@ class FileListLiveData(private val path: Path) : CloseableLiveData<Stateful<List
                             e.printStackTrace()
                         }
                     }
-                    Success(fileList as List<FileItem>)
+                    val successValue = Success(fileList as List<FileItem>)
+                    if (path.isRemotePath && Settings.REMOTE_FILE_INDEXING.valueCompat) {
+                        path.getServerId()?.let { serverId ->
+                            @Suppress("OPT_IN_USAGE")
+                            GlobalScope.launch(Dispatchers.IO) {
+                                AppDatabase.getInstance().fileCacheDao().replaceDirectory(
+                                    serverId, path.toString(), fileList.map { it.toEntity(serverId) }
+                                )
+                            }
+                        }
+                    }
+                    successValue
                 }
             } catch (e: Exception) {
                 Failure(valueCompat.value, e)

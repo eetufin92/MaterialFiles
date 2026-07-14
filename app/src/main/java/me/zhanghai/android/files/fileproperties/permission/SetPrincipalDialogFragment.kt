@@ -1,5 +1,6 @@
 /*
  * Copyright (c) 2019 Hai Zhang <dreaming.in.code.zh@gmail.com>
+ * Copyright (c) 2026 eetufin92 <eetufin92@gmail.com>
  * All Rights Reserved.
  */
 
@@ -22,6 +23,7 @@ import me.zhanghai.android.files.provider.common.PosixFileAttributes
 import me.zhanghai.android.files.provider.common.PosixPrincipal
 import me.zhanghai.android.files.util.Failure
 import me.zhanghai.android.files.util.Loading
+import me.zhanghai.android.files.util.SearchLoading
 import me.zhanghai.android.files.util.ParcelableArgs
 import me.zhanghai.android.files.util.SelectionLiveData
 import me.zhanghai.android.files.util.Stateful
@@ -81,7 +83,7 @@ abstract class SetPrincipalDialogFragment : AppCompatDialogFragment() {
 
     private fun onFilteredPrincipalListChanged(stateful: Stateful<List<PrincipalItem>>) {
         when (stateful) {
-            is Loading -> {
+            is Loading, is SearchLoading -> {
                 binding.progress.fadeInUnsafe()
                 binding.errorText.fadeOutUnsafe()
                 binding.emptyView.fadeOutUnsafe()

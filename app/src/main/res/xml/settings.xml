@@ -2,6 +2,7 @@
 
 <!--
   ~ Copyright (c) 2018 Hai Zhang <dreaming.in.code.zh@gmail.com>
+  ~ Copyright (c) 2026 eetufin92 <eetufin92@gmail.com>
   ~ All Rights Reserved.
   -->
 
@@ -111,5 +112,15 @@
             android:key="@string/pref_key_read_remote_files_for_thumbnail"
             android:title="@string/settings_read_remote_files_for_thumbnail_title"
             android:defaultValue="@bool/pref_default_value_read_remote_files_for_thumbnail" />
+
+        <SwitchPreferenceCompat
+            android:key="@string/pref_key_remote_file_indexing"
+            android:title="@string/settings_remote_file_indexing_title"
+            android:summary="@string/settings_remote_file_indexing_summary"
+            android:defaultValue="@bool/pref_default_value_remote_file_indexing" />
+
+        <Preference
+            android:key="@string/pref_key_clear_search_cache"
+            android:title="@string/settings_clear_search_cache_title" />
     </PreferenceCategory>
 </PreferenceScreen>

@@ -2,6 +2,7 @@
 
 <!--
   ~ Copyright (c) 2018 Hai Zhang <dreaming.in.code.zh@gmail.com>
+  ~ Copyright (c) 2026 eetufin92 <eetufin92@gmail.com>
   ~ All Rights Reserved.
   -->
 
@@ -305,6 +306,9 @@
     <string name="file_list_action_open_in_terminal">Open in terminal</string>
     <string name="file_list_action_add_bookmark">Add bookmark</string>
     <string name="file_list_action_create_shortcut">Create shortcut</string>
+    <string name="file_list_action_build_index">Build index</string>
+    <string name="file_list_build_index_message_format">Indexing “%1$s”…</string>
+    <string name="file_list_build_index_success">Indexing completed</string>
     <string name="file_list_breadcrumb_action_copy_path" translatable="false">@string/file_list_action_copy_path</string>
     <string name="file_list_breadcrumb_action_open_in_new_task">Open in new window</string>
     <string name="file_list_select_title_format">%1$,d</string>
@@ -799,6 +803,21 @@
     <string name="settings_show_pdf_thumbnail_pre_28_title">Show thumbnail for PDF documents</string>
     <string name="settings_show_pdf_thumbnail_pre_28_summary">Might make the app unstable on older versions of Android</string>
     <string name="settings_read_remote_files_for_thumbnail_title">Read remote files for thumbnail</string>
+    <string name="settings_remote_file_indexing_title">Remote file indexing</string>
+    <string name="settings_remote_file_indexing_summary">Cache file list and thumbnails for remote storage</string>
+    <string name="settings_clear_search_cache_title">Clear search cache</string>
+    <string name="settings_clear_search_cache_message">Are you sure you want to clear the search cache?</string>
+    <string name="settings_clear_search_cache_success">Search cache cleared</string>
+
+    <string name="search_state_searching_local_cache">Searching local cache…</string>
+    <string name="search_state_searching_remote_server">Searching remote server…</string>
+    <plurals name="search_result_count_format">
+        <item quantity="one">%1$,d result</item>
+        <item quantity="other">%1$,d results</item>
+    </plurals>
+
+    <string name="file_no_longer_exists">File no longer exists</string>
+    <string name="file_item_description_cached">\u0020(indexed)</string>
 
     <string name="about_title">About</string>
     <string name="about_version_title">Version</string>

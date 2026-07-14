@@ -1,5 +1,6 @@
 /*
  * Copyright (c) 2018 Hai Zhang <dreaming.in.code.zh@gmail.com>
+ * Copyright (c) 2026 eetufin92 <eetufin92@gmail.com>
  * All Rights Reserved.
  */
 
@@ -312,8 +313,10 @@ class FileListAdapter(
             isVisible = hasBadge
             if (hasBadge) {
                 setImageResource(badgeIconRes!!)
+                setBackgroundResource(R.drawable.badge_background_18dp)
             } else {
                 setImageDrawable(null)
+                setBackgroundResource(0)
             }
         }
         holder.nameText.text = file.name
@@ -325,7 +328,11 @@ class FileListAdapter(
                 .formatShort(context)
             val size = attributes.fileSize.formatHumanReadable(context)
             val descriptionSeparator = context.getString(R.string.file_item_description_separator)
-            listOf(lastModificationTime, size).joinToString(descriptionSeparator)
+            var description = listOf(lastModificationTime, size).joinToString(descriptionSeparator)
+            if (!file.isVerified) {
+                description += context.getString(R.string.file_item_description_cached)
+            }
+            description
         }
         val isArchivePath = path.isArchivePath
         menu.findItem(R.id.action_copy)
@@ -335,6 +342,7 @@ class FileListAdapter(
         menu.findItem(R.id.action_extract).isVisible = file.isArchiveFile
         menu.findItem(R.id.action_archive).isVisible = !isArchivePath
         menu.findItem(R.id.action_add_bookmark).isVisible = isDirectory
+        menu.findItem(R.id.action_build_index).isVisible = isDirectory && path.isRemotePath
         holder.popupMenu.setOnMenuItemClickListener {
             when (it.itemId) {
                 R.id.action_open_with -> {
@@ -379,6 +387,10 @@ class FileListAdapter(
                 }
                 R.id.action_create_shortcut -> {
                     listener.createShortcut(file)
+                    true
+                }
+                R.id.action_build_index -> {
+                    listener.buildIndex(file)
                     true
                 }
                 R.id.action_properties -> {
@@ -482,6 +494,7 @@ class FileListAdapter(
         fun copyPath(file: FileItem)
         fun addBookmark(file: FileItem)
         fun createShortcut(file: FileItem)
+        fun buildIndex(file: FileItem)
         fun showPropertiesDialog(file: FileItem)
     }
 }

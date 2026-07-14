@@ -1,5 +1,6 @@
 /*
  * Copyright (c) 2018 Hai Zhang <dreaming.in.code.zh@gmail.com>
+ * Copyright (c) 2026 eetufin92 <eetufin92@gmail.com>
  * All Rights Reserved.
  */
 
@@ -181,6 +182,11 @@ object Settings {
         BooleanSettingLiveData(
             R.string.pref_key_read_remote_files_for_thumbnail,
             R.bool.pref_default_value_read_remote_files_for_thumbnail
+        )
+
+    val REMOTE_FILE_INDEXING: SettingLiveData<Boolean> =
+        BooleanSettingLiveData(
+            R.string.pref_key_remote_file_indexing, R.bool.pref_default_value_remote_file_indexing
         )
 
     val FILE_ASSOCIATIONS: SettingLiveData<List<FileAssociation>> =

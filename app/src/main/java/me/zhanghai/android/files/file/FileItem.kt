@@ -1,5 +1,6 @@
 /*
  * Copyright (c) 2018 Hai Zhang <dreaming.in.code.zh@gmail.com>
+ * Copyright (c) 2026 eetufin92 <eetufin92@gmail.com>
  * All Rights Reserved.
  */
 
@@ -31,7 +32,8 @@ data class FileItem(
     val symbolicLinkTarget: String?,
     private val symbolicLinkTargetAttributes: @WriteWith<ParcelableParceler> BasicFileAttributes?,
     val isHidden: Boolean,
-    val mimeType: MimeType
+    val mimeType: MimeType,
+    val isVerified: Boolean = true
 ) : Parcelable {
     val attributes: BasicFileAttributes
         get() = symbolicLinkTargetAttributes ?: attributesNoFollowLinks

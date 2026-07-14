@@ -1,5 +1,6 @@
 /*
  * Copyright (c) 2018 Hai Zhang <dreaming.in.code.zh@gmail.com>
+ * Copyright (c) 2026 eetufin92 <eetufin92@gmail.com>
  * All Rights Reserved.
  */
 
@@ -7,12 +8,19 @@ package me.zhanghai.android.files.settings
 
 import android.os.Build
 import android.os.Bundle
+import androidx.lifecycle.lifecycleScope
+import com.google.android.material.dialog.MaterialAlertDialogBuilder
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import me.zhanghai.android.files.R
+import me.zhanghai.android.files.app.AppDatabase
 import me.zhanghai.android.files.theme.custom.CustomThemeHelper
 import me.zhanghai.android.files.theme.custom.ThemeColor
 import me.zhanghai.android.files.theme.night.NightMode
 import me.zhanghai.android.files.theme.night.NightModeHelper
 import me.zhanghai.android.files.ui.PreferenceFragmentCompat
+import me.zhanghai.android.files.util.showToast
 
 class SettingsPreferenceFragment : PreferenceFragmentCompat() {
     private lateinit var localePreference: LocalePreference
@@ -27,6 +35,29 @@ class SettingsPreferenceFragment : PreferenceFragmentCompat() {
                 activity.setApplicationLocalesPre33(locales)
             }
         }
+
+        preferenceScreen.findPreference<androidx.preference.Preference>(
+            getString(R.string.pref_key_clear_search_cache)
+        )?.setOnPreferenceClickListener {
+            onClearSearchCache()
+            true
+        }
+    }
+
+    private fun onClearSearchCache() {
+        MaterialAlertDialogBuilder(requireContext())
+            .setTitle(R.string.settings_clear_search_cache_title)
+            .setMessage(R.string.settings_clear_search_cache_message)
+            .setPositiveButton(R.string.delete) { _, _ ->
+                lifecycleScope.launch {
+                    withContext(Dispatchers.IO) {
+                        AppDatabase.getInstance().fileCacheDao().clear()
+                    }
+                    showToast(R.string.settings_clear_search_cache_success)
+                }
+            }
+            .setNegativeButton(android.R.string.cancel, null)
+            .show()
     }
 
     override fun onActivityCreated(savedInstanceState: Bundle?) {

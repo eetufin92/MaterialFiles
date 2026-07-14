@@ -1,5 +1,6 @@
 /*
  * Copyright (c) 2021 Hai Zhang <dreaming.in.code.zh@gmail.com>
+ * Copyright (c) 2026 eetufin92 <eetufin92@gmail.com>
  * All Rights Reserved.
  */
 
@@ -16,6 +17,7 @@ import me.zhanghai.android.files.R
 import me.zhanghai.android.files.databinding.PermissionListDialogBinding
 import me.zhanghai.android.files.util.Failure
 import me.zhanghai.android.files.util.Loading
+import me.zhanghai.android.files.util.SearchLoading
 import me.zhanghai.android.files.util.ParcelableArgs
 import me.zhanghai.android.files.util.Stateful
 import me.zhanghai.android.files.util.Success
@@ -64,7 +66,7 @@ class PermissionListDialogFragment : AppCompatDialogFragment() {
 
     private fun onPermissionListChanged(stateful: Stateful<List<PermissionItem>>) {
         when (stateful) {
-            is Loading -> {
+            is Loading, is SearchLoading -> {
                 binding.progress.fadeInUnsafe()
                 binding.errorText.fadeOutUnsafe()
                 binding.emptyView.fadeOutUnsafe()

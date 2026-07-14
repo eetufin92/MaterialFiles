@@ -1,5 +1,6 @@
 /*
  * Copyright (c) 2020 Hai Zhang <dreaming.in.code.zh@gmail.com>
+ * Copyright (c) 2026 eetufin92 <eetufin92@gmail.com>
  * All Rights Reserved.
  */
 
@@ -23,6 +24,9 @@ import me.zhanghai.android.files.storage.StorageVolumeListLiveData
 import me.zhanghai.android.files.storage.WebDavServerAuthenticator
 import me.zhanghai.android.files.theme.custom.CustomThemeHelper
 import me.zhanghai.android.files.theme.night.NightModeHelper
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.GlobalScope
+import kotlinx.coroutines.launch
 import java.util.Properties
 import me.zhanghai.android.files.provider.ftp.client.Client as FtpClient
 import me.zhanghai.android.files.provider.sftp.client.Client as SftpClient
@@ -38,6 +42,7 @@ val appInitializers = listOf(
     ::initializeLiveDataObjects,
     ::initializeCustomTheme,
     ::initializeNightMode,
+    ::initializeStorageCacheClearing,
     ::createNotificationChannels
 )
 
@@ -81,6 +86,32 @@ private fun initializeCustomTheme() {
 
 private fun initializeNightMode() {
     NightModeHelper.initialize(application)
+}
+
+private fun initializeStorageCacheClearing() {
+    var lastStorages: List<me.zhanghai.android.files.storage.Storage>? = null
+    Settings.STORAGES.observeForever { storages ->
+        val currentLastStorages = lastStorages
+        if (currentLastStorages != null) {
+            val removedOrModifiedIds = mutableSetOf<Long>()
+            for (lastStorage in currentLastStorages) {
+                val currentStorage = storages.find { it.id == lastStorage.id }
+                if (currentStorage == null || currentStorage != lastStorage) {
+                    removedOrModifiedIds.add(lastStorage.id)
+                }
+            }
+            if (removedOrModifiedIds.isNotEmpty()) {
+                @Suppress("OPT_IN_USAGE")
+                GlobalScope.launch(Dispatchers.IO) {
+                    val dao = AppDatabase.getInstance().fileCacheDao()
+                    for (id in removedOrModifiedIds) {
+                        dao.deleteByServerId(id)
+                    }
+                }
+            }
+        }
+        lastStorages = storages
+    }
 }
 
 private fun createNotificationChannels() {
