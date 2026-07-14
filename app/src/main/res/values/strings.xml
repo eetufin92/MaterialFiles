@@ -817,7 +817,7 @@
     </plurals>
 
     <string name="file_no_longer_exists">File no longer exists</string>
-    <string name="file_item_description_cached">\u0020(indexed)</string>
+    <string name="file_item_description_cached">(indexed)</string>
 
     <string name="about_title">About</string>
     <string name="about_version_title">Version</string>

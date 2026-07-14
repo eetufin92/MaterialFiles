@@ -328,11 +328,11 @@ class FileListAdapter(
                 .formatShort(context)
             val size = attributes.fileSize.formatHumanReadable(context)
             val descriptionSeparator = context.getString(R.string.file_item_description_separator)
-            var description = listOf(lastModificationTime, size).joinToString(descriptionSeparator)
+            val descriptionParts = mutableListOf(lastModificationTime, size)
             if (!file.isVerified) {
-                description += context.getString(R.string.file_item_description_cached)
+                descriptionParts.add(context.getString(R.string.file_item_description_cached))
             }
-            description
+            descriptionParts.joinToString(descriptionSeparator)
         }
         val isArchivePath = path.isArchivePath
         menu.findItem(R.id.action_copy)
